@@ -62,6 +62,23 @@ def load_dp_rgb(checkpoint, sample_obs, action_space, device,
     _add_baseline_path("diffusion_policy")
     from train_rgbd import Agent
 
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
+    # Auto-match the architecture to whatever was trained: train_rgbd saves vars(args) under
+    # "args", so a checkpoint trained with any encoder/horizon loads correctly here with no
+    # extra flags from eval.py / the judge.
+    ck = ckpt.get("args", {}) or {}
+    def _a(key, default):
+        v = ck.get(key, default)
+        return default if v is None else v
+    obs_horizon = int(_a("obs_horizon", obs_horizon))
+    act_horizon = int(_a("act_horizon", act_horizon))
+    pred_horizon = int(_a("pred_horizon", pred_horizon))
+    diffusion_step_embed_dim = int(_a("diffusion_step_embed_dim", diffusion_step_embed_dim))
+    unet_dims = list(_a("unet_dims", unet_dims))
+    n_groups = int(_a("n_groups", n_groups))
+    visual_encoder = _a("visual_encoder", visual_encoder)
+    num_kp = int(_a("num_kp", num_kp))
+
     h, w, c = sample_obs["rgb"].shape[1:]
     state_dim = sample_obs["state"].shape[1]
     stub = types.SimpleNamespace(
@@ -77,6 +94,5 @@ def load_dp_rgb(checkpoint, sample_obs, action_space, device,
         n_groups=n_groups, visual_encoder=visual_encoder, num_kp=num_kp,
     )
     agent = Agent(stub, args)
-    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     agent.load_state_dict(ckpt.get("ema_agent", ckpt.get("agent")))
     return _DPRgbPolicy(agent, obs_horizon, device, num_inference_steps=num_inference_steps)

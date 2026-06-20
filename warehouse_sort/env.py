@@ -87,7 +87,10 @@ class WarehouseSortEnv(BaseEnv):
             robot_uids = "panda"
         sensor_configs = kwargs.pop("sensor_configs", {}) or {}
         sensor_configs = {
-            **{"scene_camera": dict(width=self.camera_width, height=self.camera_height)},
+            **{
+                "scene_camera": dict(width=self.camera_width, height=self.camera_height),
+                "arm_camera": dict(width=self.camera_width, height=self.camera_height),
+            },
             **sensor_configs,
         }
         super().__init__(*args, robot_uids=robot_uids, sensor_configs=sensor_configs, **kwargs)
@@ -118,9 +121,33 @@ class WarehouseSortEnv(BaseEnv):
 
     @property
     def _default_sensor_configs(self):
-        pose = sapien_utils.look_at(eye=[0.5, 0.0, 0.7], target=[0.0, 0.0, 0.05])
-        return [CameraConfig("scene_camera", pose, self.camera_width, self.camera_height,
-                             1.0, 0.01, 100)]
+        scene_pose = sapien_utils.look_at(eye=[0.5, 0.0, 0.7], target=[0.0, 0.0, 0.05])
+        configs = [
+            CameraConfig(
+                "scene_camera",
+                scene_pose,
+                self.camera_width,
+                self.camera_height,
+                1.0,
+                0.01,
+                100,
+            ),
+        ]
+        # Wrist-mounted view (Panda URDF includes camera_link; agent is loaded before sensors).
+        if self.agent is not None and "camera_link" in self.agent.robot.links_map:
+            configs.append(
+                CameraConfig(
+                    "arm_camera",
+                    sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0]),
+                    self.camera_width,
+                    self.camera_height,
+                    fov=np.pi / 2,
+                    near=0.01,
+                    far=100,
+                    mount=self.agent.robot.links_map["camera_link"],
+                )
+            )
+        return configs
 
     @property
     def _default_human_render_camera_configs(self):

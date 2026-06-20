@@ -1,0 +1,17 @@
+# Python deps for WarehouseSort on a Linux CUDA GPU (Thunder Compute, etc.).
+# Install PyTorch with CUDA separately — see scripts/thunder_setup.sh.
+
+mani-skill==3.0.1
+sapien==3.0.3
+diffusers==0.38.0
+gymnasium==1.3.0
+hydra-core==1.3.3
+omegaconf==2.3.1
+numpy==2.4.6
+transforms3d==0.4.2
+tyro
+matplotlib
+tensorboard
+h5py
+imageio
+imageio-ffmpeg

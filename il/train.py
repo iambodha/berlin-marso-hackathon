@@ -28,6 +28,16 @@ def _demo_path(demo_dir, kind):
     return os.path.join(d, f"trajectory.{kind}.pd_ee_delta_pos.physx_cuda.h5")
 
 
+def _resolve_demo_dirs(demo_dir):
+    """demo_dir may be a single level ("easy"), a comma list ("easy,medium,hard"), or "all".
+    Returns an ordered list of levels; the FIRST level is the "primary" one used to configure
+    the eval env (so "all" puts hard first -> in-training eval reflects the hardest level)."""
+    s = str(demo_dir).strip().lower()
+    if s == "all":
+        return ["hard", "medium", "easy"]
+    return [d.strip() for d in s.split(",") if d.strip()]
+
+
 def _flags_to_cli(flags: dict):
     """method.flags (underscore keys) -> vendored tyro CLI args.
     bool True -> --flag, bool False -> --no-flag; everything else -> --flag value."""
@@ -43,14 +53,25 @@ def _flags_to_cli(flags: dict):
 
 @hydra.main(version_base=None, config_path="conf", config_name="train")
 def main(cfg):
-    demo = cfg.demo_path or _demo_path(cfg.get("demo_dir", "easy"), cfg.demo_kind)
+    extra_demos = []
+    if cfg.demo_path:
+        demo = cfg.demo_path
+    else:
+        dirs = _resolve_demo_dirs(cfg.get("demo_dir", "easy"))
+        paths = [_demo_path(d, cfg.demo_kind) for d in dirs]
+        for d, p in zip(dirs, paths):
+            if not os.path.exists(p):
+                sys.exit(f"demo dataset not found: {p}\n  run: pixi run python il/gen_demos.py "
+                         f"--difficulty {d}")
+        demo, extra_demos = paths[0], paths[1:]   # primary configures the eval env
     if not os.path.exists(demo):
-        sys.exit(f"demo dataset not found: {demo}\n  run: pixi run python il/gen_demos.py "
-                 f"--difficulty {cfg.get('demo_dir', 'easy')}")
+        sys.exit(f"demo dataset not found: {demo}")
     common = ["--env-id", cfg.env_id, "--control-mode", cfg.control_mode,
               "--sim-backend", cfg.sim_backend, "--max-episode-steps", str(cfg.max_episode_steps)]
     flags = OmegaConf.to_container(cfg.flags, resolve=True)
     cmd = [sys.executable, cfg.script, "--demo-path", demo] + common + _flags_to_cli(flags)
+    if extra_demos:
+        cmd += ["--extra-demo-paths", ",".join(extra_demos)]
     cwd = os.path.join(HERE, "baselines", cfg.baseline_dir)
     method = hydra.core.hydra_config.HydraConfig.get().runtime.choices.get("method", cfg.script)
     print(f"[il/train] method={method}\n"

@@ -15,7 +15,8 @@ __pycache__/
 .vscode/
 .claude/
 
-# IL track generated artifacts (checkpoints already covered by *.pt)
+# IL track generated artifacts
+*.pt
 il/videos/
 *.h5
 *.mp4

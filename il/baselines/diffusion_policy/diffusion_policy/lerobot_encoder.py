@@ -90,3 +90,50 @@ class ResNet18SpatialSoftmax(nn.Module):
         feat = self.trunk(image)
         kp = self.spatial_softmax(feat)
         return self.fc(kp)
+
+
+class ConvNeXtSpatialSoftmax(nn.Module):
+    """ConvNeXt-Tiny trunk (-> 8x8 feature map) + SpatialSoftmax + Linear -> out_dim.
+
+    A stronger, more modern perception backbone than ResNet18 for the same spatial
+    pick-and-place setup. Why it's a good fit here:
+      * ConvNeXt-Tiny's features are markedly richer than ResNet18's (better colour/texture
+        and shape representations) -> reads the red/blue tags and localises parcels+bins more
+        reliably, which is exactly what the held-out, wider-randomisation eval stresses.
+      * It is normalised with LayerNorm (not BatchNorm), so it is *batch-size independent* —
+        no BN running-stat drift on the tiny (B*obs_horizon) stacked batches, and no BN->GN
+        surgery needed.
+      * It lives in torchvision (already a dependency), so a fresh clone + eval needs no extra
+        downloads/hub fetches (the trained checkpoint supplies all weights at eval time).
+
+    Trunk = ConvNeXt-Tiny ``features[:6]`` which, for a 128x128 input, yields a (384, 8, 8)
+    feature map (same spatial resolution as the ResNet18 encoder above), then SpatialSoftmax
+    with ``num_kp`` keypoints -> ``2*num_kp`` coords -> Linear to ``out_dim``.
+    """
+
+    def __init__(self, in_channels=3, out_dim=256, num_kp=32, pretrained=True):
+        super().__init__()
+        from torchvision.models import convnext_tiny
+        try:
+            weights = "IMAGENET1K_V1" if pretrained else None
+            net = convnext_tiny(weights=weights)
+        except Exception as e:                     # offline / no weights cache -> train from scratch
+            print(f"[lerobot_encoder] pretrained convnext_tiny unavailable ({e}); using random init",
+                  flush=True)
+            net = convnext_tiny(weights=None)
+        # features[:6] = stem -> stage1(96,32x32) -> down -> stage2(192,16x16) -> down -> stage3(384,8x8)
+        self.trunk = nn.Sequential(*list(net.features.children())[:6])
+        if in_channels != 3:                       # adapt stem conv for non-RGB stacks (e.g. +depth)
+            stem_conv = self.trunk[0][0]
+            self.trunk[0][0] = nn.Conv2d(
+                in_channels, stem_conv.out_channels,
+                kernel_size=stem_conv.kernel_size, stride=stem_conv.stride,
+            )
+        feat_channels = 384
+        self.spatial_softmax = SpatialSoftmax(feat_channels, num_kp=num_kp)
+        self.fc = nn.Sequential(nn.Linear(2 * num_kp, out_dim), nn.ReLU())
+
+    def forward(self, image):                      # image: (B, C, H, W), float in [0, 1]
+        feat = self.trunk(image)
+        kp = self.spatial_softmax(feat)
+        return self.fc(kp)
