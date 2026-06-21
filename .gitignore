@@ -5,11 +5,16 @@
 # run outputs / checkpoints
 outputs/
 
+# Windows CUDA shim (generated locally for SAPIEN GPU sim)
+.cuda_shim/
+cuda_dll/
+
 # python
 __pycache__/
 *.pyc
 *.egg-info/
 .ipynb_checkpoints/
+venv/
 
 # editor / local settings
 .vscode/
@@ -25,6 +30,22 @@ il/videos/
 # small demo media (gif/mp4) ships in the repo.
 !media/*_demo.mp4
 
+# Diffusion policy local training runs (checkpoints/logs are large; keep config/results locally)
+il/baselines/diffusion_policy/runs/**/checkpoints/
+il/baselines/diffusion_policy/runs/**/events.out.tfevents.*
+il/baselines/diffusion_policy/runs/**/videos/
+events.out.tfevents.*
+
 # run logs (training/eval/gen stdout captured to files)
 *.log
 
+# media / docs (local only)
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.docx
+*.doc
+*.xls
+*.xlsx

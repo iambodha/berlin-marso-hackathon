@@ -1,3 +1,4 @@
+import sys
 from typing import Optional
 import gymnasium as gym
 import mani_skill.envs
@@ -53,10 +54,12 @@ def make_eval_envs(
 
             return thunk
 
+        # forkserver is Linux-only; spawn works on Windows, macOS, and Linux
+        mp_context = "spawn" if sys.platform != "linux" else "forkserver"
         vector_cls = (
             gym.vector.SyncVectorEnv
             if num_envs == 1
-            else lambda x: gym.vector.AsyncVectorEnv(x, context="forkserver")
+            else lambda x: gym.vector.AsyncVectorEnv(x, context=mp_context)
         )
         env = vector_cls(
             [
@@ -71,11 +74,16 @@ def make_eval_envs(
             ]
         )
     else:
+        # On Windows, rebuilding the GPU PhysX scene on every reset (reconfiguration_freq=1)
+        # crashes inside SAPIEN's native code. Use 0 (never auto-reconfigure) so that only
+        # the initial explicit reconfigure at env creation runs; subsequent eval resets just
+        # reset object states without tearing down the GPU scene.
+        reconfig_freq = 0 if sys.platform == "win32" else 1
         env = gym.make(
             env_id,
             num_envs=num_envs,
             sim_backend=sim_backend,
-            reconfiguration_freq=1,
+            reconfiguration_freq=reconfig_freq,
             **env_kwargs
         )
         # honour an explicit env_kwargs max_episode_steps; find_max_episode_steps_value reads the

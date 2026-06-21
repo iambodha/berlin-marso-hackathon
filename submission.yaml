@@ -1,0 +1,19 @@
+# Submission manifest — full change log for judges: REVIEWER_CHANGES.md
+#
+# Verify:
+#   pixi run python eval.py difficulty=easy policy=warehouse_sort.il_policy:load_dp \
+#     checkpoint=il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt \
+#     eval_config=conf/eval/default.yaml record_video=false
+
+team: "iambodha"
+
+state:
+  policy: warehouse_sort.il_policy:load_dp
+  levels:
+    # 2 parcels — obs_horizon=10, act_horizon=4 (auto-detected from checkpoint)
+    easy:
+      checkpoint: il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt
+    # 4 parcels — trained on medium_combined demos
+    medium:
+      checkpoint: il/baselines/diffusion_policy/runs/warehouse_combined_obs8_30k/checkpoints/best_eval_sort_accuracy.pt
+    # hard: omitted — no 6-parcel checkpoint trained; level scores 0

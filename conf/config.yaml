@@ -10,9 +10,9 @@ device: cuda
 control_mode: pd_ee_delta_pos
 max_episode_steps: 200
 
-# observation mode. This is an IMAGE challenge: the observation is the scene-camera rgb image
-# plus robot proprioception. Defaults to rgb for every difficulty.
-obs_mode: rgb
+# observation mode (state | rgb). Main track is STATE (privileged low-dim state vector);
+# rgb (scene image + proprioception) is the optional image track.
+obs_mode: state
 
 camera:
   width: 128
@@ -21,6 +21,10 @@ camera:
 # the rgb obs comes from a single fixed third-person "scene" camera (the only image input)
 obs_camera: scene
 
+# record a rollout video after eval (needs GPU rendering; set false on machines where the
+# Vulkan renderer crashes, to just get the numbers)
+record_video: true
+
 # checkpoint path (for eval.py / the judge)
 checkpoint: null
 # eval config file path (eval.py only)
@@ -28,3 +32,12 @@ eval_config: null
 # policy entrypoint "module:function" — required for eval.py / the judge
 # e.g.  policy=warehouse_sort.il_policy:load_dp_rgb
 policy: null
+
+# Diffusion-policy loader knobs (eval.py). null = auto-detect from checkpoint weights.
+# Must match how you trained (see il/conf/method/dp.yaml flags.*).
+policy_kwargs:
+  obs_horizon: null       # e.g. 2 or 4 — auto-detected if null
+  act_horizon: 8          # open-loop chunk size (training eval uses this)
+  pred_horizon: 16
+  num_inference_steps: 16
+  open_loop: true         # true = training-style (execute act_horizon before re-query)

@@ -1,0 +1,10 @@
+=== Eval history ===
+  iter   2000: sort_accuracy = 0.1875 <-- best
+  iter   4000: sort_accuracy = 0.1094
+  iter   6000: sort_accuracy = 0.1719
+  iter   8000: sort_accuracy = 0.0938
+Best checkpoint: runs/warehouse_state_dp_starter/checkpoints/best_eval_sort_accuracy.pt
+Saved final checkpoint: runs/warehouse_state_dp_starter/checkpoints/latest.pt
+ 53%|██████▉      | 8001/15000 [12:47<11:11, 10.42it/s, loss=0.0201]
+
+(venv) D:\berlin-marso-hackathon>venv\Scripts\python.exe -u il/train.py method=dp demo_dir=medium flags.total_iters=15000 flags.batch_size=128 flags.log_freq=500 flags.save_freq=2000 flags.eval_freq=2000 flags.num_eval_envs=8 flags.num_eval_episodes=16 flags.obs_horizon=4 flags.act_horizon=8 flags.pred_horizon=16 flags.exp_name=warehouse_state_dp_starter

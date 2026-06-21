@@ -1,0 +1,2 @@
+save_name,config_id,lr,obs_horizon,act_horizon,pred_horizon,best_iter,best_sort_accuracy,early_stopped,total_evals,exp_name
+save5,C1,0.0001,2,4,16,9000,0.2031,False,30,sweep_C1

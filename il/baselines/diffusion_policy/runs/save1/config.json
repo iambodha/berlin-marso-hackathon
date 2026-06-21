@@ -1,0 +1,30 @@
+{
+    "experiment_name": "warehouse_state_dp_starter",
+    "env_id": "WarehouseSort-v1",
+    "control_mode": "pd_ee_delta_pos",
+    "sim_backend": "gpu",
+    "training": {
+      "total_iters": 5000,
+      "batch_size": 128,
+      "learning_rate": 0.0001,
+      "max_episode_steps": 200
+    },
+    "horizon_params": {
+      "obs_horizon": 2,
+      "act_horizon": 8,
+      "pred_horizon": 16
+    },
+    "evaluation": {
+      "num_eval_envs": 8,
+      "num_eval_episodes": 16,
+      "eval_freq": 0
+    },
+    "logging": {
+      "log_freq": 500,
+      "save_freq": 2000,
+      "capture_video": false
+    },
+    "data": {
+      "demo_path": "D:/berlin-marso-hackathon/il/demos/medium/trajectory.state.pd_ee_delta_pos.physx_cuda.h5"
+    }
+  }

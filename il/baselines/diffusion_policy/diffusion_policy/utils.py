@@ -210,3 +210,80 @@ def build_state_obs_extractor(env_id):
     # NOTE: You can tune/modify state observations specific to each environment here as you wish. By default we include all data
     # but in some use cases you might want to exclude e.g. obs["agent"]["qvel"] as qvel is not always something you query in the real world.
     return lambda obs: list(obs["agent"].values()) + list(obs["extra"].values())
+
+
+def obs_at_timestep(obs, t=0):
+    """Slice a demo trajectory observation dict to a single timestep."""
+    if isinstance(obs, dict):
+        return {k: obs_at_timestep(v, t) for k, v in obs.items()}
+    return np.asarray(obs[t])
+
+
+def nested_obs_space_from_sample(sample):
+    """Build a gym Dict/Box tree matching a nested demo observation sample."""
+    if isinstance(sample, dict):
+        return spaces.Dict(
+            {k: nested_obs_space_from_sample(v) for k, v in sample.items()}
+        )
+    sample = np.asarray(sample)
+    if sample.dtype == np.bool_:
+        sample = sample.astype(np.float32)
+    if sample.dtype == np.uint8:
+        lo, hi = 0, 255
+    else:
+        lo, hi = -float("inf"), float("inf")
+    return spaces.Box(lo, hi, shape=sample.shape, dtype=sample.dtype)
+
+
+def demo_nested_obs_space(h5_path, num_traj=1):
+    """Observation-space tree for reorder_keys, inferred from demo HDF5 (no sim env)."""
+    raw = load_traj_hdf5(h5_path, num_traj=num_traj)
+    traj_key = sorted(raw.keys(), key=lambda x: int(x.split("_")[-1]))[0]
+    return nested_obs_space_from_sample(obs_at_timestep(raw[traj_key]["obs"], 0))
+
+
+def demo_visual_flags(h5_path, obs_mode):
+    """Whether rgb/depth tensors are present in the demo and requested by obs_mode."""
+    include_rgb = "rgb" in obs_mode
+    include_depth = "depth" in obs_mode
+    if h5_path.endswith(".h5"):
+        raw = load_traj_hdf5(h5_path, num_traj=1)
+        traj_key = next(iter(raw))
+        cam = next(iter(raw[traj_key]["obs"]["sensor_data"].values()))
+        include_rgb = include_rgb or "rgb" in cam
+        include_depth = include_depth or "depth" in cam
+    return include_rgb, include_depth
+
+
+def mock_rgbd_agent_env(dataset, obs_horizon, include_rgb, include_depth):
+    """Minimal env stand-in for Agent init when no ManiSkill env is available."""
+    proc = dataset.trajectories["observations"][0]
+    act_dim = dataset.trajectories["actions"][0].shape[-1]
+    state_dim = proc["state"].shape[-1]
+    obs_spaces = {
+        "state": spaces.Box(
+            -float("inf"), float("inf"), shape=(obs_horizon, state_dim), dtype=np.float32
+        ),
+    }
+    if include_rgb:
+        c, h, w = proc["rgb"].shape[1:]
+        # Agent reads channel count from the last dim (matches FrameStack + HWC layout).
+        obs_spaces["rgb"] = spaces.Box(
+            0, 255, shape=(obs_horizon, h, w, c), dtype=np.uint8
+        )
+    if include_depth:
+        depth = proc["depth"]
+        if depth.ndim == 4:
+            c, h, w = depth.shape[1:]
+        else:
+            h, w = depth.shape[-2:]
+            c = 1
+        obs_spaces["depth"] = spaces.Box(
+            -float("inf"), float("inf"), shape=(obs_horizon, h, w, c), dtype=np.float16
+        )
+
+    class _MockEnv:
+        single_observation_space = spaces.Dict(obs_spaces)
+        single_action_space = spaces.Box(-1.0, 1.0, shape=(act_dim,), dtype=np.float32)
+
+    return _MockEnv()

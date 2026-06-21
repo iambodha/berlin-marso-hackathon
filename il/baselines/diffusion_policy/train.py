@@ -68,6 +68,14 @@ class Args:
     diffusion_step_embed_dim: int = 64 # not very important
     unet_dims: List[int] = field(default_factory=lambda: [64, 128, 256]) # default setting is about ~4.5M params
     n_groups: int = 8 # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+    eval_inference_steps: int = 16
+    """DDPM denoising steps used during EVAL rollouts only (training uses the full 100-step
+    schedule). Fewer steps = much faster eval feedback with a near-identical signal; matches the
+    deployment loader (load_dp uses 16). Set to 100 for full-quality eval, 8-10 for fastest."""
+    state_aug_noise: float = 0.0
+    """TRAIN-time data augmentation: std of Gaussian noise added to the state observation (in obs
+    units) each step. Multiplies the effective data and improves generalisation to the held-out
+    wider position randomization. 0 disables; try 0.01-0.03. Eval is never noised."""
 
     # Environment/experiment specific arguments
     max_episode_steps: Optional[int] = None
@@ -78,7 +86,8 @@ class Args:
     eval_freq: int = 5000
     """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = None
-    """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
+    """optional extra checkpoint frequency (in addition to one checkpoint saved after every eval).
+    None disables these extra saves; eval checkpoints are always kept."""
     num_eval_episodes: int = 100
     """the number of episodes to evaluate the agent on"""
     num_eval_envs: int = 10
@@ -89,6 +98,14 @@ class Args:
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = 'pd_joint_delta_pos'
     """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
+
+    resume: Optional[str] = None
+    """path to a checkpoint (.pt) to resume training from; training continues from the saved iteration"""
+
+    early_stop_patience: int = 3
+    """stop training if the primary eval metric drops for this many consecutive evaluations"""
+    early_stop_metric: str = "sort_accuracy"
+    """which eval metric to monitor for early stopping (sort_accuracy / success_once / success_at_end)"""
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
@@ -172,6 +189,7 @@ class Agent(nn.Module):
         self.obs_horizon = args.obs_horizon
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
+        self.state_aug_noise = getattr(args, "state_aug_noise", 0.0)
         assert len(env.single_observation_space.shape) == 2 # (obs_horizon, obs_dim)
         assert len(env.single_action_space.shape) == 1 # (act_dim, )
         assert (env.single_action_space.high == 1).all() and (env.single_action_space.low == -1).all()
@@ -192,9 +210,19 @@ class Agent(nn.Module):
             clip_sample=True, # clip output to [-1,1] to improve stability
             prediction_type='epsilon' # predict noise (instead of denoised action)
         )
+        # Use a SHORT denoising schedule for eval rollouts (get_action). This only affects the
+        # inference .step() loop; training (compute_loss/add_noise) still samples over all 100
+        # timesteps, so the learned model is unchanged -- eval just runs ~6-10x faster.
+        self.eval_inference_steps = getattr(args, "eval_inference_steps", self.num_diffusion_iters)
+        self.noise_scheduler.set_timesteps(self.eval_inference_steps)
 
     def compute_loss(self, obs_seq, action_seq):
         B = obs_seq.shape[0]
+
+        # train-time state augmentation: perturb the observation with small Gaussian noise so the
+        # policy doesn't overfit exact training poses (helps the held-out wider randomization).
+        if self.state_aug_noise > 0:
+            obs_seq = obs_seq + torch.randn_like(obs_seq) * self.state_aug_noise
 
         # observation as FiLM conditioning
         obs_cond = obs_seq.flatten(start_dim=1) # (B, obs_horizon * obs_dim)
@@ -254,12 +282,83 @@ class Agent(nn.Module):
         end = start + self.act_horizon
         return noisy_action_seq[:, start:end] # (B, act_horizon, act_dim)
 
-def save_ckpt(run_name, tag):
+def write_run_config(run_name, args, demo_path, env_kwargs, resume_from=None):
+    """Persist hyperparameters to runs/<name>/config.json for later reference / eval."""
+    import json
+    os.makedirs(f"runs/{run_name}", exist_ok=True)
+    cfg = {
+        "experiment_name": run_name,
+        "env_id": args.env_id,
+        "control_mode": args.control_mode,
+        "sim_backend": args.sim_backend,
+        "training": {
+            "total_iters": args.total_iters,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "max_episode_steps": args.max_episode_steps,
+            "seed": args.seed,
+            "state_aug_noise": getattr(args, "state_aug_noise", 0.0),
+        },
+        "horizon_params": {
+            "obs_horizon": args.obs_horizon,
+            "act_horizon": args.act_horizon,
+            "pred_horizon": args.pred_horizon,
+        },
+        "evaluation": {
+            "num_eval_envs": args.num_eval_envs,
+            "num_eval_episodes": args.num_eval_episodes,
+            "eval_freq": args.eval_freq,
+            "eval_inference_steps": getattr(args, "eval_inference_steps", 16),
+            "early_stop_patience": args.early_stop_patience,
+            "early_stop_metric": args.early_stop_metric,
+        },
+        "logging": {
+            "log_freq": args.log_freq,
+            "save_freq": args.save_freq,
+            "capture_video": args.capture_video,
+        },
+        "data": {
+            "demo_path": os.path.abspath(demo_path),
+            "num_demos": args.num_demos,
+            "num_parcels": env_kwargs.get("num_parcels"),
+            "fixed_poses": env_kwargs.get("fixed_poses"),
+            "randomization": env_kwargs.get("randomization"),
+        },
+        # Pass these to eval.py: policy_kwargs.* (must match training horizons)
+        "policy_eval": {
+            "obs_horizon": args.obs_horizon,
+            "act_horizon": args.act_horizon,
+            "pred_horizon": args.pred_horizon,
+            "open_loop": True,
+            "num_inference_steps": getattr(args, "eval_inference_steps", 16),
+        },
+    }
+    if resume_from:
+        cfg["resume_from"] = os.path.abspath(resume_from)
+    path = f"runs/{run_name}/config.json"
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"[train] Wrote {path}", flush=True)
+    return path
+
+def save_ckpt(run_name, tag, iteration=None):
     os.makedirs(f'runs/{run_name}/checkpoints', exist_ok=True)
     ema.copy_to(ema_agent.parameters())
+    config = {
+        "obs_horizon": args.obs_horizon,
+        "act_horizon": args.act_horizon,
+        "pred_horizon": args.pred_horizon,
+        "open_loop": True,
+        "num_inference_steps": getattr(args, "eval_inference_steps", 16),
+    }
     torch.save({
         'agent': agent.state_dict(),
         'ema_agent': ema_agent.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'lr_scheduler': lr_scheduler.state_dict(),
+        'ema_state': ema.state_dict(),
+        'iteration': iteration,
+        'config': config,
     }, f'runs/{run_name}/checkpoints/{tag}.pt')
 
 if __name__ == "__main__":
@@ -306,7 +405,10 @@ if __name__ == "__main__":
     assert args.max_episode_steps != None, "max_episode_steps must be specified as imitation learning algorithms task solve speed is dependent on the data you train on"
     env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = dict(obs_horizon=args.obs_horizon)
-    envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None)
+    _eval_enabled = args.eval_freq is not None and args.eval_freq > 0
+    # Eval envs are created lazily (just before each eval run) and destroyed afterwards so
+    # they don't occupy VRAM during training. This prevents OOM on GPUs with limited memory.
+    envs = None  # populated inside evaluate_and_save_best when needed
 
     if args.track:
         import wandb
@@ -328,22 +430,35 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # dataloader setup
+    # dataloader setup — built after resume load so remaining_iters is correct
     dataset = SmallDemoDataset_DiffusionPolicy(args.demo_path, device, num_traj=args.num_demos)
-    sampler = RandomSampler(dataset, replacement=False)
-    batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
-    batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
-    train_dataloader = DataLoader(
-        dataset,
-        batch_sampler=batch_sampler,
-        num_workers=args.num_dataload_workers,
-        worker_init_fn=lambda worker_id: worker_init_fn(worker_id, base_seed=args.seed),
-    )
     if args.num_demos is None:
         args.num_demos = len(dataset)
+    write_run_config(run_name, args, args.demo_path, env_kwargs,
+                     resume_from=args.resume if args.resume else None)
 
     # agent setup
-    agent = Agent(envs, args).to(device)
+    # When eval is enabled: spin up 1 env briefly to read the real observation/action space
+    # (the live env may have a different obs_dim than the HDF5 dataset), then close it
+    # immediately so it doesn't occupy VRAM during training.
+    # When eval is disabled: derive shapes from the dataset.
+    if _eval_enabled:
+        print("[train] Creating a temporary env to read observation space...")
+        _probe_env = make_eval_envs(
+            args.env_id, 1, args.sim_backend, env_kwargs, other_kwargs, video_dir=None
+        )
+        agent_env_arg = _probe_env
+    else:
+        import gymnasium as gym
+        obs_dim = dataset.trajectories['observations'][0].shape[-1]
+        act_dim = dataset.trajectories['actions'][0].shape[-1]
+        obs_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(args.obs_horizon, obs_dim))
+        act_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_dim,))
+        class _MockEnv:
+            single_observation_space = obs_space
+            single_action_space = act_space
+        agent_env_arg = _MockEnv()
+    agent = Agent(agent_env_arg, args).to(device)
     optimizer = optim.AdamW(params=agent.parameters(),
         lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6)
 
@@ -359,19 +474,84 @@ if __name__ == "__main__":
     # accelerates training and improves stability
     # holds a copy of the model weights
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
-    ema_agent = Agent(envs, args).to(device)
+    ema_agent = Agent(agent_env_arg, args).to(device)
+
+    # Close and free the probe env — it was only needed for the observation space shape
+    if _eval_enabled:
+        _probe_env.close()
+        del _probe_env
+        torch.cuda.empty_cache()
+        print("[train] Probe env closed. VRAM freed for training.")
+
+    # Resume from checkpoint if requested
+    start_iteration = 0
+    if args.resume is not None:
+        if not os.path.isfile(args.resume):
+            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume}")
+        print(f"Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        agent.load_state_dict(ckpt['agent'])
+        ema_agent.load_state_dict(ckpt['ema_agent'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
+        if 'ema_state' in ckpt:
+            ema.load_state_dict(ckpt['ema_state'])
+        start_iteration = (ckpt.get('iteration') or 0) + 1
+        print(f"Resuming from iteration {start_iteration} / {args.total_iters}")
+
+    remaining_iters = args.total_iters - start_iteration
+    if remaining_iters <= 0:
+        print(f"Nothing to train: checkpoint is already at iteration {start_iteration} >= total_iters {args.total_iters}")
+        if envs is not None:
+            envs.close()
+        writer.close()
+        raise SystemExit(0)
+    sampler = RandomSampler(dataset, replacement=False)
+    batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
+    batch_sampler = IterationBasedBatchSampler(batch_sampler, remaining_iters)
+    train_dataloader = DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
+        num_workers=args.num_dataload_workers,
+        worker_init_fn=lambda worker_id: worker_init_fn(worker_id, base_seed=args.seed),
+    )
 
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
 
+    # Early-stop state (mutable dict so the closure can write to it)
+    _es = {
+        'history': [],       # list of (iteration, metric_value)
+        'best_value': -1.0,
+        'best_iter': 0,
+        'should_stop': False,
+    }
+
+    # _eval_enabled is set earlier when creating eval envs
+
     # define evaluation and logging functions
     def evaluate_and_save_best(iteration):
-        if iteration % args.eval_freq == 0:
+        if not _eval_enabled:
+            return
+        if iteration % args.eval_freq == 0 and iteration > 0:
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
-            eval_metrics = evaluate(
-                args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
+
+            # Create eval envs just-in-time so they don't occupy VRAM during training
+            print(f"\n[eval] Creating eval environments (iter {iteration})...")
+            _eval_envs = make_eval_envs(
+                args.env_id, args.num_eval_envs, args.sim_backend,
+                env_kwargs, other_kwargs, video_dir=None,
             )
+            try:
+                eval_metrics = evaluate(
+                    args.num_eval_episodes, ema_agent, _eval_envs, device, args.sim_backend
+                )
+            finally:
+                _eval_envs.close()
+                del _eval_envs
+                torch.cuda.empty_cache()
+
             timings["eval"] += time.time() - last_tick
 
             print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")
@@ -380,14 +560,54 @@ if __name__ == "__main__":
                 writer.add_scalar(f"eval/{k}", eval_metrics[k], iteration)
                 print(f"{k}: {eval_metrics[k]:.4f}")
 
+            # Keep a numbered checkpoint for every eval so eval_folder.py can scan the full run.
+            save_ckpt(run_name, str(iteration), iteration=iteration)
+            print(f"Saved checkpoint at iteration {iteration}.")
+
             save_on_best_metrics = ["sort_accuracy", "success_once", "success_at_end"]
             for k in save_on_best_metrics:
                 if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
                     best_eval_metrics[k] = eval_metrics[k]
-                    save_ckpt(run_name, f"best_eval_{k}")
+                    save_ckpt(run_name, f"best_eval_{k}", iteration=iteration)
                     print(
                         f"New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint."
                     )
+
+            # --- Early stopping ---
+            primary = eval_metrics.get(args.early_stop_metric)
+            if primary is not None:
+                _es['history'].append((iteration, primary))
+                if primary > _es['best_value']:
+                    _es['best_value'] = primary
+                    _es['best_iter'] = iteration
+
+                # Stop only when BOTH conditions hold:
+                #  1. The last `patience` evals are strictly decreasing (no blips)
+                #  2. None of those evals are within 5% of the all-time best
+                #     (a near-best value means the model is still competitive)
+                if len(_es['history']) >= args.early_stop_patience + 1:
+                    tail = _es['history'][-args.early_stop_patience:]
+                    tail_vals = [v for _, v in tail]
+                    threshold = _es['best_value'] * 0.95
+
+                    all_decreasing = all(
+                        tail_vals[i] > tail_vals[i + 1]
+                        for i in range(len(tail_vals) - 1)
+                    )
+                    none_near_best = all(v < threshold for v in tail_vals)
+
+                    if all_decreasing and none_near_best:
+                        print(
+                            f"\n[early stop] '{args.early_stop_metric}' has been strictly "
+                            f"decreasing for {args.early_stop_patience} consecutive evals "
+                            f"and none are within 5% of the best ({_es['best_value']:.4f})."
+                        )
+                        print(
+                            f"[early stop] Best was {_es['best_value']:.4f} "
+                            f"at iteration {_es['best_iter']} "
+                            f"(checkpoint: runs/{run_name}/checkpoints/best_eval_{args.early_stop_metric}.pt)"
+                        )
+                        _es['should_stop'] = True
     def log_metrics(iteration):
         if iteration % args.log_freq == 0:
             writer.add_scalar(
@@ -401,9 +621,10 @@ if __name__ == "__main__":
     # Training begins.
     # ---------------------------------------------------------------------------- #
     agent.train()
-    pbar = tqdm(total=args.total_iters)
+    pbar = tqdm(total=args.total_iters, initial=start_iteration)
     last_tick = time.time()
-    for iteration, data_batch in enumerate(train_dataloader):
+    for i, data_batch in enumerate(train_dataloader):
+        iteration = start_iteration + i
         timings["data_loading"] += time.time() - last_tick
 
         # forward and compute loss
@@ -431,15 +652,55 @@ if __name__ == "__main__":
         evaluate_and_save_best(iteration)
         log_metrics(iteration)
 
-        # Checkpoint
-        if args.save_freq is not None and iteration % args.save_freq == 0:
-            save_ckpt(run_name, str(iteration))
+        # Optional extra checkpoints between evals (eval saves happen in evaluate_and_save_best).
+        if args.save_freq is not None and iteration > 0 and iteration % args.save_freq == 0:
+            save_ckpt(run_name, str(iteration), iteration=iteration)
         pbar.update(1)
         pbar.set_postfix({"loss": total_loss.item()})
         last_tick = time.time()
 
-    evaluate_and_save_best(args.total_iters)
-    log_metrics(args.total_iters)
+        if _es['should_stop']:
+            print("\n[early stop] Halting training early.")
+            break
 
-    envs.close()
+    else:
+        # Loop completed without early stop — run a final eval
+        evaluate_and_save_best(args.total_iters)
+        log_metrics(args.total_iters)
+
+    # Print eval summary
+    if _es['history']:
+        print("\n=== Eval history ===")
+        for it, val in _es['history']:
+            marker = " <-- best" if it == _es['best_iter'] else ""
+            print(f"  iter {it:>6}: {args.early_stop_metric} = {val:.4f}{marker}")
+        print(f"Best checkpoint: runs/{run_name}/checkpoints/best_eval_{args.early_stop_metric}.pt")
+
+    # always save a final checkpoint so there is always something to evaluate later
+    save_ckpt(run_name, "latest", iteration=args.total_iters - 1)
+    print(f"Saved final checkpoint: runs/{run_name}/checkpoints/latest.pt")
+
+    # Write machine-readable results for sweep scripts
+    import json as _json
+    _results = {
+        "exp_name": run_name,
+        "eval_history": [[int(it), float(val)] for it, val in _es["history"]],
+        "best_value": float(_es["best_value"]),
+        "best_iter": int(_es["best_iter"]),
+        "early_stopped": bool(_es["should_stop"]),
+        "metric": args.early_stop_metric,
+    }
+    _results_path = f"runs/{run_name}/results.json"
+    with open(_results_path, "w") as _f:
+        _json.dump(_results, _f, indent=2)
+    print(f"Results written to {_results_path}")
+
+    _cfg_path = f"runs/{run_name}/config.json"
+    if os.path.isfile(_cfg_path):
+        with open(_cfg_path) as _f:
+            _run_cfg = _json.load(_f)
+        _run_cfg["final_results"] = _results
+        with open(_cfg_path, "w") as _f:
+            _json.dump(_run_cfg, _f, indent=2)
+
     writer.close()

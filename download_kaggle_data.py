@@ -26,10 +26,9 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-# ============ PASTE YOUR KAGGLE CREDENTIALS HERE ============
-KAGGLE_USERNAME = "unrealdrip"
-KAGGLE_KEY = "412081ee9034f8cc6665fe2560ecb92b"
-# ==============================================================
+# Optional fallbacks — prefer KAGGLE_USERNAME / KAGGLE_KEY env vars or ~/.kaggle/kaggle.json
+KAGGLE_USERNAME = ""
+KAGGLE_KEY = ""
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DEST = REPO_ROOT / "il" / "demos"

@@ -87,10 +87,7 @@ class WarehouseSortEnv(BaseEnv):
             robot_uids = "panda"
         sensor_configs = kwargs.pop("sensor_configs", {}) or {}
         sensor_configs = {
-            **{
-                "scene_camera": dict(width=self.camera_width, height=self.camera_height),
-                "arm_camera": dict(width=self.camera_width, height=self.camera_height),
-            },
+            **{"scene_camera": dict(width=self.camera_width, height=self.camera_height)},
             **sensor_configs,
         }
         super().__init__(*args, robot_uids=robot_uids, sensor_configs=sensor_configs, **kwargs)

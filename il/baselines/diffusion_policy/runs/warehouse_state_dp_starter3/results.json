@@ -1,0 +1,8 @@
+{
+  "exp_name": "warehouse_state_dp_starter3",
+  "eval_history": [],
+  "best_value": -1.0,
+  "best_iter": 0,
+  "early_stopped": false,
+  "metric": "sort_accuracy"
+}

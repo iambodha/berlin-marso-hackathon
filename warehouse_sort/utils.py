@@ -77,10 +77,21 @@ def rollout_metrics(env, agent, device, n_episodes, seeds, max_steps, determinis
         if take < nb:
             batch_seeds = batch_seeds + all_seeds[: nb - take]
         obs, _ = env.reset(seed=batch_seeds)
+        if hasattr(agent, "reset"):
+            agent.reset()
         obs = to_device(obs, device)
         for _ in range(max_steps - 1):
-            obs, _, _, _, _ = env.step(agent.act(obs, deterministic=deterministic))
-            obs = to_device(obs, device)
+            # Match training eval (evaluate.py): open-loop action chunks + FrameStack obs.
+            if getattr(agent, "open_loop", False) and hasattr(agent, "get_action"):
+                action_seq = agent.get_action(obs)
+                for i in range(action_seq.shape[1]):
+                    obs, _, _, truncated, _ = env.step(action_seq[:, i])
+                    obs = to_device(obs, device)
+                    if truncated.any():
+                        break
+            else:
+                obs, _, _, _, _ = env.step(agent.act(obs, deterministic=deterministic))
+                obs = to_device(obs, device)
         ev = base.evaluate()
         sc = ev["success_count"][:take]
         tot_sorted += sc.sum().item()
@@ -110,14 +121,14 @@ def print_metrics(role, difficulty, obs_mode, m, hard=False):
     print("-" * 50, flush=True)
 
 
-def load_agent(ckpt_path, env, device, entrypoint=None):
+def load_agent(ckpt_path, env, device, entrypoint=None, policy_kwargs=None):
     """Load a policy for eval / the judge. Requires a policy entrypoint.
 
     entrypoint format: "module:function" where
-      function(checkpoint, sample_obs, action_space, device) -> policy with .act(obs, deterministic=True)
+      function(checkpoint, sample_obs, action_space, device, **policy_kwargs) -> policy
 
-    Example:
-      policy=warehouse_sort.il_policy:load_dp_rgb    (RGB Diffusion Policy)
+    policy_kwargs (optional): passed through to the loader, e.g. obs_horizon, act_horizon,
+      open_loop — see conf/config.yaml policy_kwargs.
     """
     if not entrypoint:
         raise ValueError(
@@ -127,11 +138,15 @@ def load_agent(ckpt_path, env, device, entrypoint=None):
             "    where load_fn(checkpoint, sample_obs, action_space, device) -> policy"
         )
     import importlib
+    from omegaconf import OmegaConf
+
     sample_obs = to_device(env.reset(seed=0)[0], device)
     action_space = env.single_action_space
     mod_name, fn_name = entrypoint.split(":")
     fn = getattr(importlib.import_module(mod_name), fn_name)
-    policy = fn(ckpt_path, sample_obs, action_space, device)
+    kwargs = OmegaConf.to_container(policy_kwargs, resolve=True) if policy_kwargs else {}
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    policy = fn(ckpt_path, sample_obs, action_space, device, **kwargs)
     assert hasattr(policy, "act"), f"policy from {entrypoint} must define .act(obs, deterministic=True)"
     return policy, None
 
@@ -182,13 +197,15 @@ def make_env(
     record_metrics: bool = True,
     ignore_terminations: bool = True,
     video_dir: Optional[str] = None,
+    obs_horizon: int = 1,
 ):
     """Construct the WarehouseSort env + standard ManiSkill vector wrappers.
 
     Returns (vector_env, is_rgb). For rgb obs the observation is {"rgb", "state"};
-    for state obs it is a flat tensor.
+    for state obs it is a flat tensor (or (N, obs_horizon, D) when FrameStack is applied).
     """
     from mani_skill.utils.wrappers.record import RecordEpisode
+    from mani_skill.utils.wrappers import FrameStack
 
     n = int(num_envs if num_envs is not None else cfg.num_envs)
     is_rgb = obs_mode == "rgb"
@@ -197,6 +214,8 @@ def make_env(
     env = _gym_make(cfg, obs_mode, randomization, n, render_mode)
     if is_rgb:
         env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=True)
+    elif int(obs_horizon) > 1:
+        env = FrameStack(env, num_stack=int(obs_horizon))
     if video_dir is not None:
         env = RecordEpisode(
             env, output_dir=video_dir, save_trajectory=False, save_video=True,
