@@ -1,19 +1,23 @@
-# Submission manifest — full change log for judges: REVIEWER_CHANGES.md
+# ─────────────────────────────────────────────────────────────────────────────
+# SUBMISSION MANIFEST  (copy to submission.yaml and edit)
 #
-# Verify:
-#   pixi run python eval.py difficulty=easy policy=warehouse_sort.il_policy:load_dp \
-#     checkpoint=il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt \
-#     eval_config=conf/eval/default.yaml record_video=false
+# Declare the track(s) you trained — `state`, `rgb`, or both. Each track has its own
+# policy entrypoint and one checkpoint PER difficulty level. The judge scores every
+# track you fill in and reports a weighted sort-accuracy per track.
+#
+# Per-level weights: easy 0.2, medium 0.3, hard 0.5. A level you omit scores 0 (its
+# weight still counts). Omit a whole track (`state` or `rgb`) to skip it.
+#
+# State track: privileged low-dim state vector; the state vector is parcel-count-specific,
+# so train ONE checkpoint per level. RGB track (optional): scene-camera image only.
+# ─────────────────────────────────────────────────────────────────────────────
 
-team: "iambodha"
+team: "Waitlist"
 
 state:
-  policy: warehouse_sort.il_policy:load_dp
+  policy: warehouse_sort.il_policy:load_dp          # obs→action entrypoint (state)
   levels:
-    # 2 parcels — obs_horizon=10, act_horizon=4 (auto-detected from checkpoint)
-    easy:
-      checkpoint: il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt
-    # 4 parcels — trained on medium_combined demos
-    medium:
-      checkpoint: il/baselines/diffusion_policy/runs/warehouse_combined_obs8_30k/checkpoints/best_eval_sort_accuracy.pt
-    # hard: omitted — no 6-parcel checkpoint trained; level scores 0
+    easy:   { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_easy.pt }
+    medium: { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_medium.pt }
+    hard:   { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_hard.pt }
+
