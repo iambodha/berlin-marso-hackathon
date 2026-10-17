@@ -15,39 +15,31 @@ import argparse
 import os
 import sys
 
-import torch
-from omegaconf import OmegaConf
 
-import warehouse_sort  # noqa: F401
-from warehouse_sort.il_policy import peek_dp_config
-from warehouse_sort.utils import compose_cfg, load_agent, make_env, to_device
-from warehouse_sort.viz import parse_state_obs, save_state_rollout_video
-
-
-def _rollout_frames(env, agent, device, max_steps, num_parcels, seed):
+def _rollout_frames(env, agent, device, max_steps, num_parcels, seed, *, convert, parse_frame):
     obs, _ = env.reset(seed=seed)
     if hasattr(agent, "reset"):
         agent.reset()
-    obs = to_device(obs, device)
-    frames = [parse_state_obs(obs, num_parcels)]
+    obs = convert(obs, device)
+    frames = [parse_frame(obs, num_parcels)]
     steps = 0
 
     while steps < max_steps - 1:
         if getattr(agent, "open_loop", False) and hasattr(agent, "get_action"):
             action_seq = agent.get_action(obs)
             for i in range(action_seq.shape[1]):
-                obs, _, _, truncated, _ = env.step(action_seq[:, i])
-                obs = to_device(obs, device)
+                obs, _, terminated, truncated, _ = env.step(action_seq[:, i])
+                obs = convert(obs, device)
                 steps += 1
-                frames.append(parse_state_obs(obs, num_parcels))
-                if truncated.any() or steps >= max_steps - 1:
+                frames.append(parse_frame(obs, num_parcels))
+                if terminated.any() or truncated.any() or steps >= max_steps - 1:
                     return frames
         else:
-            obs, _, _, truncated, _ = env.step(agent.act(obs, deterministic=True))
-            obs = to_device(obs, device)
+            obs, _, terminated, truncated, _ = env.step(agent.act(obs, deterministic=True))
+            obs = convert(obs, device)
             steps += 1
-            frames.append(parse_state_obs(obs, num_parcels))
-            if truncated.any():
+            frames.append(parse_frame(obs, num_parcels))
+            if terminated.any() or truncated.any():
                 break
     return frames
 
@@ -68,6 +60,21 @@ def main():
     if not os.path.isfile(args.checkpoint):
         print(f"Checkpoint not found: {args.checkpoint}", file=sys.stderr)
         sys.exit(1)
+
+    if args.fps <= 0 or (args.max_steps is not None and args.max_steps < 2):
+        p.error("fps must be positive and max-steps must be at least 2")
+    ckpt_stem = os.path.splitext(os.path.basename(args.checkpoint))[0]
+    out = args.output or os.path.join("videos", f"{args.difficulty}_{ckpt_stem}.gif")
+    if os.path.exists(out):
+        p.error("output already exists; choose a new filename")
+
+    # Keep --help and missing-checkpoint errors usable without the GPU stack.
+    import torch
+    from omegaconf import OmegaConf
+    import warehouse_sort  # noqa: F401
+    from warehouse_sort.il_policy import peek_dp_config
+    from warehouse_sort.utils import compose_cfg, load_agent, make_env, to_device
+    from warehouse_sort.viz import parse_state_obs, save_state_rollout_video
 
     cfg = compose_cfg(overrides=[f"difficulty={args.difficulty}", f"checkpoint={args.checkpoint}"])
     cfg.policy = args.policy
@@ -92,15 +99,15 @@ def main():
         cfg, cfg.obs_mode, randomization,
         num_envs=1, obs_horizon=obs_horizon, render_mode=None,
     )
-    agent, _ = load_agent(args.checkpoint, env, device, entrypoint=cfg.policy, policy_kwargs=pk)
+    try:
+        agent, _ = load_agent(args.checkpoint, env, device, entrypoint=cfg.policy, policy_kwargs=pk)
+        frames = _rollout_frames(env, agent, device, max_steps, num_parcels, args.seed,
+                                 convert=to_device, parse_frame=parse_state_obs)
+        ev = env.unwrapped.evaluate()
+        sorted_n = float(ev["success_count"][0].item())
+    finally:
+        env.close()
 
-    frames = _rollout_frames(env, agent, device, max_steps, num_parcels, args.seed)
-    ev = env.unwrapped.evaluate()
-    sorted_n = float(ev["success_count"][0].item())
-    env.close()
-
-    ckpt_stem = os.path.splitext(os.path.basename(args.checkpoint))[0]
-    out = args.output or os.path.join("videos", f"{args.difficulty}_{ckpt_stem}.gif")
     os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
 
     title = f"{args.difficulty}  sorted={sorted_n:.0f}/{num_parcels}"

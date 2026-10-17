@@ -28,7 +28,7 @@ pixi run python eval.py difficulty=medium obs_mode=state \
   eval_config=conf/eval/default.yaml record_video=false
 ```
 
-`submission.yaml` at the repo root points to these checkpoints. **Hard is omitted** — we did not train a 6-parcel checkpoint (state observation size is parcel-count-specific; a medium checkpoint cannot run on hard).
+`submission.yaml` at the repo root records these historical checkpoint locations. The checkpoint files are not included in this source release. **Hard is omitted** — we did not train a 6-parcel checkpoint (state observation size is parcel-count-specific; a medium checkpoint cannot run on hard).
 
 **Note for Windows:** pass `record_video=false` — Vulkan rendering can crash after metrics are printed.
 
@@ -199,7 +199,7 @@ Full per-run configs: `il/baselines/diffusion_policy/runs/<exp_name>/config.json
 
 ## 11. Checkpoint inventory
 
-Committed best checkpoints referenced in `submission.yaml`:
+Historical best checkpoint paths referenced in `submission.yaml` (weights are not bundled):
 
 ```
 il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt
