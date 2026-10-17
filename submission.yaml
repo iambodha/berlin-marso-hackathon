@@ -12,12 +12,13 @@
 # so train ONE checkpoint per level. RGB track (optional): scene-camera image only.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Checkpoints are external training outputs and are NOT bundled in this source release.
+# These are historical run locations; retrain or supply compatible checkpoints.
 team: "Waitlist"
 
 state:
   policy: warehouse_sort.il_policy:load_dp          # obs→action entrypoint (state)
   levels:
-    easy:   { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_easy.pt }
-    medium: { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_medium.pt }
-    hard:   { checkpoint: il/baselines/diffusion_policy/runs/warehouse_state_dp/checkpoints/best_eval_sort_accuracy_hard.pt }
+    easy:   { checkpoint: il/baselines/diffusion_policy/runs/warehouse_easy_obs10_30k/checkpoints/best_eval_sort_accuracy.pt }
+    medium: { checkpoint: il/baselines/diffusion_policy/runs/warehouse_combined_obs8_30k/checkpoints/best_eval_sort_accuracy.pt }
 
